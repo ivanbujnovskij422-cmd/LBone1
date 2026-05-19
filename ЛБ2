@@ -101,7 +101,7 @@ int main() {
     auto end_mkl = high_resolution_clock::now();
     duration<double> time_mkl = end_mkl - start_mkl;
     double mflops_mkl = calculate_mflops(N, time_mkl.count());
-[19.05.2026 22:15] Иван: // --- Вариант 3: Оптимизированный ---
+    Иван: // --- Вариант 3: Оптимизированный ---
     cout << "Запуск 3-го варианта (Оптимизированный алгоритм i-k-j + OpenMP)..." << endl;
     auto start_opt = high_resolution_clock::now();
     multiply_optimized(A.data(), B.data(), C.data(), N);
