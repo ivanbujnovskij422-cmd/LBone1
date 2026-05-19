@@ -1,142 +1,145 @@
-Так как матрицы огромные , они гарантированно не помещаются в L1/L2/L3 кэш процессора целиком. Поэтому ключевую роль здесь будет играть именно локальность данных.
-Разберу и напишем реализацию для всех трех вариантов на C++.
-Выделение памяти и генерация
-Для матриц такого размера выделять память на стеке нельзя — произойдет переполнение (stack overflow) => использую динамическую память. Чтобы процессор мог эффективно читать данные, лучше всего развернуть двумерную матрицу в одномерный массив (строка за строкой).
-
+[19.05.2026 22:15] Иван: Привет! Это классическая лабораторная работа по высокопроизводительным вычислениям. Поскольку я являюсь искусственным интеллектом, я не могу самостоятельно сделать скриншоты вашего экрана или собрать .zip архив. Однако я напишу для вас полный код программы на C++, подробную инструкцию по запуску и шаблон отчета, чтобы вы могли сдать эту работу на отлично.
+Для выполнения задачи мы будем использовать C++, так как он идеально подходит для работы с Intel MKL и оптимизации (через OpenMP).
+### 1. Исходный код программы (C++)
+Вам понадобится установленная библиотека Intel MKL (сейчас часть Intel oneAPI Base Toolkit) и компилятор с поддержкой OpenMP. Создайте файл main.cpp и вставьте в него этот код:
+`cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
 #include <random>
-#include <cmath>
+#include <iomanip>
+#include <mkl.h>
+#include <omp.h>
 
-// Для Intel MKL / BLAS
-#include <mkl.h> 
+using namespace std;
+using namespace std::chrono;
 
-const int N = 4096;
+const int N = 1024;
 
-// Функция для генерации случайной матрицы
-void generate_matrix(float* mat, int size) {
-    std::random_device rd;
-    std::mt_device eng(rd());
-    std::uniform_real_distribution<float> distr(0.0f, 1.0f);
-    
-    for (int i = 0; i < size * size; ++i) {
-        mat[i] = distr(eng);
-    }
-}
-Вариант 1:
-Классический алгоритм со сложностью O(n^3) по стандартной формуле:C_ij = ∑_(k=1)^n A_ik · Bkj
-В трех вложенных циклах i, j, k мы идем по строкам матрицы A (эффективно для кэша), но по столбцам матрицы B. Проход по столбцам заставляет процессор прыгать по памяти с огромным шагом (4096 * 4 байта), что вызывает постоянные промахи мимо кэша (cache misses). Это будет самый медленный вариант.
-
+// 1-й вариант: Классическая формула из линейной алгебры (наивный алгоритм i-j-k)
 void multiply_naive(const float* A, const float* B, float* C, int n) {
-    // Инициализируем матрицу C нулями
-    std::fill(C, C + n * n, 0.0f);
-
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
+            float sum = 0.0f;
             for (int k = 0; k < n; ++k) {
-                C[i * n + j] += A[i * n + k] * B[k * n + j];
+                sum += A[i * n + k] * B[k * n + j];
+            }
+            C[i * n + j] = sum;
+        }
+    }
+}
+
+// 2-й вариант: Использование функции cblas_sgemm из Intel MKL
+void multiply_mkl(const float* A, const float* B, float* C, int n) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                n, n, n, 1.0f, A, n, B, n, 0.0f, C, n);
+}
+
+// 3-й вариант: Оптимизированный алгоритм (изменение порядка циклов на i-k-j + OpenMP)
+// Порядок i-k-j делает доступ к памяти последовательным (cache-friendly).
+// OpenMP распараллеливает вычисления на все ядра процессора.
+void multiply_optimized(const float* A, const float* B, float* C, int n) {
+    // Инициализация нулями
+    #pragma omp parallel for
+    for (int i = 0; i < n * n; ++i) {
+        C[i] = 0.0f;
+    }
+
+    #pragma omp parallel for
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < n; ++k) {
+            float a_ik = A[i * n + k];
+            #pragma omp simd
+            for (int j = 0; j < n; ++j) {
+                C[i * n + j] += a_ik * B[k * n + j];
             }
         }
     }
 }
-Вариант 2: 
-Функция cblas_sgemm из библиотеки Intel MKL оптимизирована под конкретную архитектуру вашего процессора с использованием векторных инструкций (AVX-2 / AVX-512) и блочного разделения памяти на уровне ассемблера. Это наш , так сказать "эталон" скорости.
 
-void multiply_blas(const float* A, const float* B, float* C, int n) {
-    // cblas_sgemm выполняет операцию: C = alpha*A*B + beta*C
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, 
-                n, n, n, 
-                1.0f,  // alpha
-                A, n, 
-                B, n, 
-                0.0f,  // beta
-                C, n);
+// Функция для вычисления MFlops
+double calculate_mflops(int n, double time_seconds) {
+    double c = 2.0 * n * n * n; // Оценка сложности c = 2*n^3
+    return (c / time_seconds) * 1e-6;
 }
-Вариант 3: 
-Чтобы достичь производительности «не ниже 30% от Intel MKL»,нужно решить проблему промахов кэша и задействовать все ядра процессора.
 
-я сделал так:
-1. Перестановка циклов (i, k, j) вместо (i, j, k): Если поменять местами внутренние циклы, то в самом глубоком цикле буду двигаться по строке матрицы B и по строке матрицы C. Это обеспечивает последовательный доступ к памяти (Spatial Locality) и позволяет компилятору автоматически применить векторные инструкции (SIMD).
-2. Параллелизм через OpenMP: Разделю внешние итерации между ядрами процессора с помощью директивы #pragma omp parallel for.
-`cpp
-void multiply_optimized(const float* A, const float* B, float* C, int n) {
-std::fill(C, C + n * n, 0.0f);
-
-// Распараллеливаем внешний цикл по строкам
-    #pragma omp parallel for schedule(static)
-        for (int i = 0; i < n; ++i) {
-            for (int k = 0; k < n; ++k) {
-                float r = A[i * n + k]; // Фиксируем элемент, чтобы не читать его каждый раз
-                    for (int j = 0; j < n; ++j) {
-                        C[i * n + j] += r * B[k * n + j];
-                    }
-                }
-             }
-         }
-
-*Примечание: Если этого окажется недостаточно, можно применить полноценное разбиение на блоки (Tiling/Blocking), например, блоками 64 * 64, чтобы данные подматрицы целиком помещались в L1-кэш.
-## Главная функция (Метрики и Сравнение)
-Расчет по формулам из задания:
- * Число операций: c = 2n^3
- * Производительность в MFlops: P = \frac{c}{t \cdot 10^6}
-cpp
 int main() {
-    // Выделяем память под матрицы в "выравниваемом" пуле для лучшей производительности
-    float* A = (float*)mkl_malloc(N * N * sizeof(float), 64);
-    float* B = (float*)mkl_malloc(N * N * sizeof(float), 64);
-    float* C = (float*)mkl_malloc(N * N * sizeof(float), 64);
+    // ВЫВОД ДАННЫХ ОБ АВТОРЕ (Измените на свои данные!)
+    cout << "========================================" << endl;
+    cout << "Автор: [Ваша Фамилия Имя Отчество]" << endl;
+    cout << "Группа: [Номер вашей группы]" << endl;
+    cout << "========================================" << endl << endl;
 
-    std::cout << "Генерация матриц размера " << N << "x" << N << "..." << std::endl;
-    generate_matrix(A, N);
-    generate_matrix(B, N);
+    cout << "Размер матриц: " << N << "x" << N << endl;
 
-    double c_ops = 2.0 * std::pow(N, 3); // Число операций
+    // Выделение памяти (используем vector, чтобы не переполнить стек)
+    vector<float> A(N * N);
+    vector<float> B(N * N);
+    vector<float> C(N * N);
 
-    auto run_benchmark = [&](const std::string& name, void (*func)(const float*, const float*, float*, int)) {
-        std::cout << "\nЗапуск: " << name << "..." << std::endl;
-        
-        auto start = std::chrono::high_resolution_clock::now();
-        func(A, B, C, N);
-        auto end = std::chrono::high_resolution_clock::now();
-        
-        std::chrono::duration<double> duration = end - start;
-        double seconds = duration.count();
-        double mflops = (c_ops / seconds) / 1e6;
+    // Генерация случайных чисел
+    mt19937 gen(42); // Фиксированный seed для воспроизводимости
+    uniform_real_distribution<float> dist(-10.0f, 10.0f);
 
-        std::cout << "Время выполнения: " << seconds << " сек." << std::endl;
-        std::cout << "Производительность: " << mflops << " MFlops" << std::endl;
-        return mflops;
-    };
+    for (int i = 0; i < N * N; ++i) {
+        A[i] = dist(gen);
+        B[i] = dist(gen);
+    }
 
-    // ВАЖНО: Наивный алгоритм на таком размере может выполняться несколько МИНУТ.
-    // Если нужно просто сдать, можно уменьшить размер N для теста наивного, 
-    // либо запастись терпением.
-    double mflops_naive = run_benchmark("1. Наивный алгоритм (i, j, k)", multiply_naive);
-    double mflops_blas  = run_benchmark("2. Intel MKL (cblas_sgemm)", multiply_blas);
-    double mflops_opt   = run_benchmark("3. Оптимизированный (i, k, j + OpenMP)", multiply_optimized);
-
-    // Анализ результатов
-    std::cout << "\n--- Сравнение и Анализ ---" << std::endl;
-    std::cout << "Эффективность оптимизированного алгоритма относительно MKL: " 
-              << (mflops_opt / mflops_blas) * 100.0 << "%" << std::endl;
+    // --- Вариант 1: Наивный ---
+    cout << "Запуск 1-го варианта (Наивный алгоритм)..." << endl;
+    auto start_naive = high_resolution_clock::now();
+    multiply_naive(A.data(), B.data(), C.data(), N);
+    auto end_naive = high_resolution_clock::now();
+    duration<double> time_naive = end_naive - start_naive;
+    double mflops_naive = calculate_mflops(N, time_naive.count());
     
-    if ((mflops_opt / mflops_blas) >= 0.30) {
-        std::cout << "Успех! Требование (не ниже 30% от Intel MKL) выполнено." << std::endl;
-    } else {
-        std::cout << "Внимание: Производительность ниже 30%. Требуется дополнительная блочная оптимизация." << std::endl;
-    }VV
+    // --- Вариант 2: Intel MKL ---
+    cout << "Запуск 2-го варианта (cblas_sgemm из Intel MKL)..." << endl;
+    auto start_mkl = high_resolution_clock::now();
+    multiply_mkl(A.data(), B.data(), C.data(), N);
+    auto end_mkl = high_resolution_clock::now();
+    duration<double> time_mkl = end_mkl - start_mkl;
+    double mflops_mkl = calculate_mflops(N, time_mkl.count());
+[19.05.2026 22:15] Иван: // --- Вариант 3: Оптимизированный ---
+    cout << "Запуск 3-го варианта (Оптимизированный алгоритм i-k-j + OpenMP)..." << endl;
+    auto start_opt = high_resolution_clock::now();
+    multiply_optimized(A.data(), B.data(), C.data(), N);
+    auto end_opt = high_resolution_clock::now();
+    duration<double> time_opt = end_opt - start_opt;
+    double mflops_opt = calculate_mflops(N, time_opt.count());
 
-    // Освобождение памяти
-    mkl_free(A);
-    mkl_free(B);
-    mkl_free(C);
+    // --- Вывод результатов ---
+    cout << "\n--- Результаты тестирования ---" << endl;
+    cout << left << setw(30) << "Алгоритм" << setw(15) << "Время (с)" << "Производительность (MFlops)" << endl;
+    cout << "----------------------------------------------------------------" << endl;
+    cout << left << setw(30) << "1. Наивный (из лин. алгебры)" << setw(15) << time_naive.count() << mflops_naive << endl;
+    cout << left << setw(30) << "2. Intel MKL (cblas_sgemm)" << setw(15) << time_mkl.count() << mflops_mkl << endl;
+    cout << left << setw(30) << "3. Оптимизированный (свой)" << setw(15) << time_opt.count() << mflops_opt << endl;
+
+    // Проверка условия 30%
+    double percent_of_mkl = (mflops_opt / mflops_mkl) * 100.0;
+    cout << "\nПроизводительность собственного алгоритма составляет " 
+         << percent_of_mkl << "% от эталонного MKL." << endl;
+    if (percent_of_mkl >= 30.0) {
+        cout << "Условие задания ВЫПОЛНЕНО (>= 30%)." << endl;
+    } else {
+        cout << "Условие задания НЕ ВЫПОЛНЕНО (< 30%)." << endl;
+    }
 
     return 0;
 }
 
-### Как компилировать:
-Для сборки программы понадобятся установленный **Intel OneAPI MKL**  и включенный флаг OpenMP. Пример команды для компиляции через g++:
+### 2. Как скомпилировать и запустить
+Если вы используете **Visual Studio**:
+ 1. Создайте пустой C++ проект.
+ 2. В свойствах проекта включите поддержку OpenMP (C/C++ -> Language -> OpenMP Support = Yes (/openmp)).
+ 3. Подключите библиотеку Intel MKL (обычно это делается через свойства проекта Intel Performance Libraries -> Use Intel MKL = Parallel).
+Если вы компилируете через консоль Linux/WSL (с установленным MKL):
 bash
-g++ -O3 -fopenmp main.cpp -lmkl_rt -o matrix_perf
+g++ -O3 -fopenmp main.cpp -I/opt/intel/oneapi/mkl/latest/include -L/opt/intel/oneapi/mkl/latest/lib/intel64 -lmkl_rt -o matrix_mult
+./matrix_mult
+
+`
+*(Пути к MKL могут отличаться в зависимости от версии вашей установки).*
 
