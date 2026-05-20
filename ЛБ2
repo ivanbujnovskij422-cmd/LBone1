@@ -16,8 +16,8 @@ using namespace std::chrono;
 
 const int N = 1024;
 
-// 1-й вариант: Классическая формула из линейной алгебры (наивный алгоритм i-j-k)
-void multiply_naive(const float* A, const float* B, float* C, int n) {
+// 1-й вариант: Классическая формула из линейной алгебры 
+void okak1(const float* A, const float* B, float* C, int n) {
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
             float sum = 0.0f;
@@ -30,26 +30,26 @@ void multiply_naive(const float* A, const float* B, float* C, int n) {
 }
 
 // 2-й вариант: Использование функции cblas_sgemm из Intel MKL
-void multiply_mkl(const float* A, const float* B, float* C, int n) {
+void okak2(const float* A, const float* B, float* C, int n) {
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                n, n, n, 1.0f, A, n, B, n, 0.0f, C, n);
+        n, n, n, 1.0f, A, n, B, n, 0.0f, C, n);
 }
 
 // 3-й вариант: Оптимизированный алгоритм (изменение порядка циклов на i-k-j + OpenMP)
 // Порядок i-k-j делает доступ к памяти последовательным (cache-friendly).
 // OpenMP распараллеливает вычисления на все ядра процессора.
-void multiply_optimized(const float* A, const float* B, float* C, int n) {
+void okak3(const float* A, const float* B, float* C, int n) {
     // Инициализация нулями
-    #pragma omp parallel for
+#pragma omp parallel for
     for (int i = 0; i < n * n; ++i) {
         C[i] = 0.0f;
     }
 
-    #pragma omp parallel for
+#pragma omp parallel for
     for (int i = 0; i < n; ++i) {
         for (int k = 0; k < n; ++k) {
             float a_ik = A[i * n + k];
-            #pragma omp simd
+
             for (int j = 0; j < n; ++j) {
                 C[i * n + j] += a_ik * B[k * n + j];
             }
@@ -65,10 +65,10 @@ double calculate_mflops(int n, double time_seconds) {
 
 int main() {
     // ВЫВОД ДАННЫХ ОБ АВТОРЕ (Измените на свои данные!)
-    cout << "========================================" << endl;
-    cout << "Автор: [Ваша Фамилия Имя Отчество]" << endl;
-    cout << "Группа: [Номер вашей группы]" << endl;
-    cout << "========================================" << endl << endl;
+    
+    cout << "Автор: Буйновский Иван Игоревич" << endl;
+    cout << "Группа: 090301-ПОВа-о25" << endl;
+    
 
     cout << "Размер матриц: " << N << "x" << N << endl;
 
@@ -89,41 +89,42 @@ int main() {
     // --- Вариант 1: Наивный ---
     cout << "Запуск 1-го варианта (Наивный алгоритм)..." << endl;
     auto start_naive = high_resolution_clock::now();
-    multiply_naive(A.data(), B.data(), C.data(), N);
+    okak1(A.data(), B.data(), C.data(), N);
     auto end_naive = high_resolution_clock::now();
     duration<double> time_naive = end_naive - start_naive;
     double mflops_naive = calculate_mflops(N, time_naive.count());
-    
+
     // --- Вариант 2: Intel MKL ---
     cout << "Запуск 2-го варианта (cblas_sgemm из Intel MKL)..." << endl;
     auto start_mkl = high_resolution_clock::now();
-    multiply_mkl(A.data(), B.data(), C.data(), N);
+    okak2(A.data(), B.data(), C.data(), N);
     auto end_mkl = high_resolution_clock::now();
     duration<double> time_mkl = end_mkl - start_mkl;
     double mflops_mkl = calculate_mflops(N, time_mkl.count());
-    Иван: // --- Вариант 3: Оптимизированный ---
+    // --- Вариант 3: Оптимизированный ---
     cout << "Запуск 3-го варианта (Оптимизированный алгоритм i-k-j + OpenMP)..." << endl;
     auto start_opt = high_resolution_clock::now();
-    multiply_optimized(A.data(), B.data(), C.data(), N);
+    okak3(A.data(), B.data(), C.data(), N);
     auto end_opt = high_resolution_clock::now();
     duration<double> time_opt = end_opt - start_opt;
     double mflops_opt = calculate_mflops(N, time_opt.count());
 
     // --- Вывод результатов ---
-    cout << "\n--- Результаты тестирования ---" << endl;
-    cout << left << setw(30) << "Алгоритм" << setw(15) << "Время (с)" << "Производительность (MFlops)" << endl;
-    cout << "----------------------------------------------------------------" << endl;
-    cout << left << setw(30) << "1. Наивный (из лин. алгебры)" << setw(15) << time_naive.count() << mflops_naive << endl;
-    cout << left << setw(30) << "2. Intel MKL (cblas_sgemm)" << setw(15) << time_mkl.count() << mflops_mkl << endl;
-    cout << left << setw(30) << "3. Оптимизированный (свой)" << setw(15) << time_opt.count() << mflops_opt << endl;
+    cout << "\n Результаты тестирования" << endl;
+    cout << left << setw(30) << "Алгоритм" << setw(15) << "Время (с)" << "Производительность " << endl;
+    
+    cout << left << setw(30) << "1. Наивный " << setw(15) << time_naive.count() << mflops_naive << endl;
+    cout << left << setw(30) << "2. Intel MKL " << setw(15) << time_mkl.count() << mflops_mkl << endl;
+    cout << left << setw(30) << "3. Оптимизированный " << setw(15) << time_opt.count() << mflops_opt << endl;
 
     // Проверка условия 30%
     double percent_of_mkl = (mflops_opt / mflops_mkl) * 100.0;
-    cout << "\nПроизводительность собственного алгоритма составляет " 
-         << percent_of_mkl << "% от эталонного MKL." << endl;
+    cout << "\nПроизводительность собственного алгоритма составляет "
+        << percent_of_mkl << "% от эталонного MKL." << endl;
     if (percent_of_mkl >= 30.0) {
         cout << "Условие задания ВЫПОЛНЕНО (>= 30%)." << endl;
-    } else {
+    }
+    else {
         cout << "Условие задания НЕ ВЫПОЛНЕНО (< 30%)." << endl;
     }
 
