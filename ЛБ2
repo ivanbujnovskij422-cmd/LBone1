@@ -5,6 +5,8 @@
 #include <chrono>
 #include <random>
 #include <iomanip>
+#include <cmath>
+
 #include <mkl.h>
 #include <omp.h>
 
@@ -12,119 +14,213 @@ using namespace std;
 using namespace std::chrono;
 
 const int N = 1024;
+const int BLOCK = 64;
 
-// 1-й вариант: Классическая формула из линейной алгебры 
-void okak1(const float* A, const float* B, float* C, int n) {
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
+// 1. Наивное умножение
+void okak1(const float* A, const float* B, float* C, int n)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        for (int j = 0; j < n; ++j)
+        {
             float sum = 0.0f;
-            for (int k = 0; k < n; ++k) {
+
+            for (int k = 0; k < n; ++k)
+            {
                 sum += A[i * n + k] * B[k * n + j];
             }
+
             C[i * n + j] = sum;
         }
     }
 }
-
-// 2-й вариант: Использование функции cblas_sgemm из Intel MKL
-void okak2(const float* A, const float* B, float* C, int n) {
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-        n, n, n, 1.0f, A, n, B, n, 0.0f, C, n);
+// 2. MKL
+void okak2(const float* A, const float* B, float* C, int n)
+{
+    cblas_sgemm(
+        CblasRowMajor,
+        CblasNoTrans,
+        CblasNoTrans,
+        n,
+        n,
+        n,
+        1.0f,
+        A,
+        n,
+        B,
+        n,
+        0.0f,
+        C,
+        n
+    );
 }
-
-// 3-й вариант: Оптимизированный алгоритм (изменение порядка циклов на i-k-j + OpenMP)
-// Порядок i-k-j делает доступ к памяти последовательным (cache-friendly).
-// OpenMP распараллеливает вычисления на все ядра процессора.
-void okak3(const float* A, const float* B, float* C, int n) {
-    // Инициализация нулями
+// 3. Оптимизированное блочное умножение
+void okak3(const float* A, const float* B, float* C, int n)
+{
+    // Обнуление
 #pragma omp parallel for
-    for (int i = 0; i < n * n; ++i) {
+    for (int i = 0; i < n * n; ++i)
+    {
         C[i] = 0.0f;
     }
+    // BLOCKING + OPENMP
+#pragma omp parallel for collapse(2) schedule(dynamic)
+    for (int ii = 0; ii < n; ii += BLOCK)
+    {
+        for (int kk = 0; kk < n; kk += BLOCK)
+        {
+            for (int jj = 0; jj < n; jj += BLOCK)
+            {
+                int i_max = min(ii + BLOCK, n);
+                int k_max = min(kk + BLOCK, n);
+                int j_max = min(jj + BLOCK, n);
 
-#pragma omp parallel for
-    for (int i = 0; i < n; ++i) {
-        for (int k = 0; k < n; ++k) {
-            float a_ik = A[i * n + k];
+                for (int i = ii; i < i_max; ++i)
+                {
+                    for (int k = kk; k < k_max; ++k)
+                    {
+                        float a = A[i * n + k];
 
-            for (int j = 0; j < n; ++j) {
-                C[i * n + j] += a_ik * B[k * n + j];
+#pragma omp simd
+                        for (int j = jj; j < j_max; ++j)
+                        {
+                            C[i * n + j] += a * B[k * n + j];
+                        }
+                    }
+                }
             }
         }
     }
 }
+// Проверка корректности
 
-// Функция для вычисления MFlops
-double calculate_mflops(int n, double time_seconds) {
-    double c = 2.0 * n * n * n; // Оценка сложности c = 2*n^3
-    return (c / time_seconds) * 1e-6;
+bool check_correctness(
+    const vector<float>& ref,
+    const vector<float>& test,
+    int n)
+{
+    const float eps = 1e-2f;
+    for (int i = 0; i < n * n; ++i)
+    {
+        if (fabs(ref[i] - test[i]) > eps)
+        {
+            cout << "Ошибка в элементе "
+                << i
+                << " : "
+                << ref[i]
+                << " vs "
+                << test[i]
+                << endl;
+
+            return false;
+        }
+    }
+
+    return true;
 }
+// MFLOPS
+double calculate_mflops(int n, double time_seconds)
+{
+    double ops = 2.0 * n * n * n;
 
-int main() {
-    // ВЫВОД ДАННЫХ ОБ АВТОРЕ (Измените на свои данные!)
-    
+    return (ops / time_seconds) * 1e-6;
+}
+// MAIN
+int main()
+{
+    setlocale(LC_ALL, "RUS");
     cout << "Автор: Буйновский Иван Игоревич" << endl;
     cout << "Группа: 090301-ПОВа-о25" << endl;
-    
-
     cout << "Размер матриц: " << N << "x" << N << endl;
 
-    // Выделение памяти (используем vector, чтобы не переполнить стек)
     vector<float> A(N * N);
     vector<float> B(N * N);
-    vector<float> C(N * N);
 
-    // Генерация случайных чисел
-    mt19937 gen(42); // Фиксированный seed для воспроизводимости
+    vector<float> C1(N * N);
+    vector<float> C2(N * N);
+    vector<float> C3(N * N);
+
+    mt19937 gen(42);
     uniform_real_distribution<float> dist(-10.0f, 10.0f);
-
-    for (int i = 0; i < N * N; ++i) {
+    for (int i = 0; i < N * N; ++i)
+    {
         A[i] = dist(gen);
         B[i] = dist(gen);
     }
+    // 1. Наивный
 
-    // --- Вариант 1: Наивный ---
-    cout << "Запуск 1-го варианта (Наивный алгоритм)..." << endl;
-    auto start_naive = high_resolution_clock::now();
-    okak1(A.data(), B.data(), C.data(), N);
-    auto end_naive = high_resolution_clock::now();
-    duration<double> time_naive = end_naive - start_naive;
-    double mflops_naive = calculate_mflops(N, time_naive.count());
+    cout << "\nНаивный алгоритм..." << endl;
+    auto start1 = high_resolution_clock::now();
+    okak1(A.data(), B.data(), C1.data(), N);
+    auto end1 = high_resolution_clock::now();
+    double time1 =
+        duration<double>(end1 - start1).count();
+    double mflops1 =
+        calculate_mflops(N, time1);
+    // 2. MKL
 
-    // --- Вариант 2: Intel MKL ---
-    cout << "Запуск 2-го варианта (cblas_sgemm из Intel MKL)..." << endl;
-    auto start_mkl = high_resolution_clock::now();
-    okak2(A.data(), B.data(), C.data(), N);
-    auto end_mkl = high_resolution_clock::now();
-    duration<double> time_mkl = end_mkl - start_mkl;
-    double mflops_mkl = calculate_mflops(N, time_mkl.count());
-    // --- Вариант 3: Оптимизированный ---
-    cout << "Запуск 3-го варианта (Оптимизированный алгоритм i-k-j + OpenMP)..." << endl;
-    auto start_opt = high_resolution_clock::now();
-    okak3(A.data(), B.data(), C.data(), N);
-    auto end_opt = high_resolution_clock::now();
-    duration<double> time_opt = end_opt - start_opt;
-    double mflops_opt = calculate_mflops(N, time_opt.count());
+    cout << "MKL..." << endl;
+    auto start2 = high_resolution_clock::now();
+    okak2(A.data(), B.data(), C2.data(), N);
+    auto end2 = high_resolution_clock::now();
+    double time2 =
+        duration<double>(end2 - start2).count();
+    double mflops2 =
+        calculate_mflops(N, time2);
+    // 3. Оптимизированный
 
-    // --- Вывод результатов ---
-    cout << "\n Результаты тестирования" << endl;
-    cout << left << setw(30) << "Алгоритм" << setw(15) << "Время (с)" << "Производительность " << endl;
-    
-    cout << left << setw(30) << "1. Наивный " << setw(15) << time_naive.count() << mflops_naive << endl;
-    cout << left << setw(30) << "2. Intel MKL " << setw(15) << time_mkl.count() << mflops_mkl << endl;
-    cout << left << setw(30) << "3. Оптимизированный " << setw(15) << time_opt.count() << mflops_opt << endl;
+    cout << "Оптимизированный..." << endl;
+    auto start3 = high_resolution_clock::now();
+    okak3(A.data(), B.data(), C3.data(), N);
+    auto end3 = high_resolution_clock::now();
+    double time3 =
+        duration<double>(end3 - start3).count();
+    double mflops3 =
+        calculate_mflops(N, time3);
 
-    // Проверка условия 30%
-    double percent_of_mkl = (mflops_opt / mflops_mkl) * 100.0;
-    cout << "\nПроизводительность собственного алгоритма составляет "
-        << percent_of_mkl << "% от эталонного MKL." << endl;
-    if (percent_of_mkl >= 30.0) {
-        cout << "Условие задания ВЫПОЛНЕНО (>= 30%)." << endl;
+    // Проверка
+
+    cout << "\nПроверка корректности:" << endl;
+    bool correct =
+        check_correctness(C2, C3, N);
+    if (correct)
+    {
+        cout << "Результаты совпадают." << endl;
     }
-    else {
-        cout << "Условие задания НЕ ВЫПОЛНЕНО (< 30%)." << endl;
+    else
+    {
+        cout << "Результаты НЕ совпадают." << endl;
     }
 
+    // Таблица
+    cout << "\nРезультаты:\n" << endl;
+    cout << left
+        << setw(25) << "Алгоритм"
+        << setw(15) << "Время"
+        << "MFLOPS"
+        << endl;
+    cout << left
+        << setw(25) << "Наивный"
+        << setw(15) << time1
+        << mflops1
+        << endl;
+    cout << left
+        << setw(25) << "MKL"
+        << setw(15) << time2
+        << mflops2
+        << endl;
+    cout << left
+        << setw(25) << "Оптимизированный"
+        << setw(15) << time3
+        << mflops3
+        << endl;
+    // Процент от MKL
+    double percent =
+        (mflops3 / mflops2) * 100.0;
+    cout << "\nПроизводительность: "
+        << percent
+        << "% от MKL"
+        << endl;
     return 0;
 }
 
